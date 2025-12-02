@@ -11,6 +11,12 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
 use vortex_gpu_audio::lockfree::{LockFreeRingBuffer, AudioRingBuffer};
 use vortex_gpu_audio::gpu::{GpuProcessor, EqBand, EqFilterType};
+use vortex_gpu_audio::audio::{
+    AudioEngine, AudioConfig, AudioMemoryPool, PoolTier,
+    dsp::{EqProcessor, Convolver, Resampler, ResamplerQuality},
+    filters::{FilterChain, BiquadFilter},
+};
+use std::sync::{Arc, Mutex};
 
 fn bench_ring_buffer_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("ring_buffer_write");
@@ -278,6 +284,91 @@ fn bench_convolution_processing(c: &mut Criterion) {
     group.finish();
 }
 
+// Phase 2 Benchmarks
+
+fn bench_memory_pool(c: &mut Criterion) {
+    let mut group = c.benchmark_group("memory_pool");
+    
+    group.bench_function("allocate_small_512", |b| {
+        let pool = Arc::new(Mutex::new(AudioMemoryPool::new()));
+        
+        b.iter(|| {
+            let buffer = AudioMemoryPool::allocate(Arc::clone(&pool), 512);
+            black_box(buffer);
+        });
+    });
+    
+    group.bench_function("allocate_large_8192", |b| {
+        let pool = Arc::new(Mutex::new(AudioMemoryPool::new()));
+        
+        b.iter(|| {
+            let buffer = AudioMemoryPool::allocate(Arc::clone(&pool), 8192);
+            black_box(buffer);
+        });
+    });
+    
+    group.finish();
+}
+
+fn bench_eq_processor(c: &mut Criterion) {
+    let mut group = c.benchmark_group("eq_processor");
+    group.throughput(Throughput::Elements(2048));
+    
+    group.bench_function("512_band_process_2048_samples", |b| {
+        let mut eq = EqProcessor::new_512band(48000.0).unwrap();
+        eq.set_band_gain(0, 3.0).unwrap();
+        eq.set_band_gain(256, -2.0).unwrap();
+        
+        let input = vec![0.5f32; 2048];
+        let mut output = vec![0.0f32; 2048];
+        
+        b.iter(|| {
+            black_box(eq.process(&input, &mut output).unwrap());
+        });
+    });
+    
+    group.finish();
+}
+
+fn bench_filter_chain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("filter_chain");
+    group.throughput(Throughput::Elements(1024));
+    
+    group.bench_function("4_filters_1024_samples", |b| {
+        let mut chain = FilterChain::new();
+        chain.add_filter(Box::new(BiquadFilter::peaking(1000.0, 48000.0, 1.0, 3.0)));
+        chain.add_filter(Box::new(BiquadFilter::peaking(4000.0, 48000.0, 1.0, -2.0)));
+        chain.add_filter(Box::new(BiquadFilter::peaking(8000.0, 48000.0, 1.0, 1.0)));
+        chain.add_filter(Box::new(BiquadFilter::peaking(12000.0, 48000.0, 1.0, -1.0)));
+        
+        let input = vec![0.5f32; 1024];
+        let mut output = vec![0.0f32; 1024];
+        
+        b.iter(|| {
+            chain.process(&input, &mut output);
+            black_box(&output);
+        });
+    });
+    
+    group.finish();
+}
+
+fn bench_resampler(c: &mut Criterion) {
+    let mut group = c.benchmark_group("resampler");
+    
+    group.bench_function("44.1k_to_48k_standard_1024", |b| {
+        let mut resampler = Resampler::new(44100, 48000, ResamplerQuality::Standard).unwrap();
+        let input = vec![0.5f32; 1024];
+        let mut output = vec![0.0f32; 2048];
+        
+        b.iter(|| {
+            black_box(resampler.process(&input, &mut output).unwrap());
+        });
+    });
+    
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_ring_buffer_write,
@@ -288,7 +379,11 @@ criterion_group!(
     bench_gpu_memory_transfer,
     bench_eq_processing,
     bench_fft_processing,
-    bench_convolution_processing
+    bench_convolution_processing,
+    bench_memory_pool,
+    bench_eq_processor,
+    bench_filter_chain,
+    bench_resampler
 );
 
 criterion_main!(benches);

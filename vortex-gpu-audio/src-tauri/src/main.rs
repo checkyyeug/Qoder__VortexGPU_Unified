@@ -5,6 +5,9 @@ mod error;
 mod lockfree;
 mod gpu;
 mod validation;
+mod audio;
+mod fileio;
+mod network;
 
 use error::{VortexResult, AudioError, ErrorContext};
 use gpu::{GpuProcessor, GpuBackendType};
